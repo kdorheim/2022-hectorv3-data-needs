@@ -18,7 +18,8 @@ cmip_vars = ["tos"]
 query = dict(
     experiment_id=expts,
     variable_id=cmip_vars,
-    grid_label="gn"
+    grid_label="gn",
+    table_id="Omon"
 )
 
 catalog = catalog.search(require_all_on=["source_id"], **query)
@@ -106,27 +107,38 @@ def global_mean(path):
     ds = xr.open_zarr(fsspec.get_mapper(path), consolidated=True)
 
     # Extract the meta data
-    meta = get_ds_meta(ds)
+    meta_data = get_ds_meta(ds)
 
     # Get the weighted mean global temperature based on the latitude.
-    lat = ds[get_lat_name(ds)]
-    weight = np.cos(np.deg2rad(lat))
-    weight /= weight.mean()
-    other_dims = set(ds.dims) - {'time'}
-    rslt = (ds * weight).mean(other_dims).coarsen(time=12).mean()
+    # Based on the meta data find the correct areacello file
+    df = pd.read_csv('https://storage.googleapis.com/cmip6/cmip6-zarr-consolidated-stores.csv')
+    query = "variable_id == 'areacello' & source_id == '" + meta_data.model[0] + "'" + \
+            " & grid_label == 'gn'"
+    df_area = df.query(query)
+    if df_area.shape[0] < 1:
+        raise RuntimeError("Could not find areacello for " + path)
+
+    # Read in the area cello file
+    ds_area = xr.open_zarr(fsspec.get_mapper(df_area.zstore.values[0]), consolidated=True)
+
+    # Using the ocean cell area and total area calculate the weighted mean over the ocean.
+    total_area = ds_area.areacello.sum(set(ds_area.areacello.dims), skipna=True)
+    other_dims = set(ds.tos.dims) - {'time'}
+    tos_ts = (ds.tos * ds_area.areacello).sum(dim=other_dims) / total_area
 
     # Extract time information.
-    t = rslt["time"].dt.strftime("%Y%m%d").values
+    t = tos_ts["time"].dt.strftime("%Y%m%d").values
     year = list(map(lambda x: selstr(x, start=0, stop=4), t))
+    month = list(map(lambda x: selstr(x, start=4, stop=6), t))
 
     # Format into a data frame.
-    val = rslt["tos"].values
-    d = {'year': year, 'value': val}
+    val = tos_ts.values
+    d = {'year': year, 'month': month, 'value': val}
     df = pd.DataFrame(data=d)
-    out = combine_df(meta, df)
+    out = combine_df(meta_data, df)
     out["area"] = "global"
 
-    return out
+    return (out)
 
 # Set up the output directory and process the files.
 outdir = './global/'
@@ -134,9 +146,11 @@ outdir = './global/'
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
+catalog.to_csv("catalog.csv")
 # Process the files
-for file in catalog["zstore"]:
+for file in catalog["zstore"][range(248, 506)]:
     try:
+        print(file)
         ofile = outdir + file.replace("/", "_") + '.csv'
         ofile = ofile.replace("gs:__cmip6_", "")
         out = global_mean(file)

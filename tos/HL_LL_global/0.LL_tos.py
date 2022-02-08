@@ -155,7 +155,7 @@ if not os.path.exists(outdir):
     os.mkdir(outdir)
 
 # Process the files
-for file in catalog["zstore"]s:
+for file in catalog["zstore"]:
     print(file)
     try:
         ofile = outdir + file.replace("/", "_") + '.csv'
